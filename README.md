@@ -486,6 +486,7 @@ $ git log --oneline
 
 ![git push](docs/images/24-git-push.png)
 
+
 ---
 
 ## 6. 검증 방법 요약
