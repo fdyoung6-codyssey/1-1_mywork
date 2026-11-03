@@ -553,6 +553,57 @@ $ git log --oneline
 - **확인**: `user.name=fdyoung9-a11y` 아래 빈 줄 존재
 - **해결**: `git config --global user.name "fdyoung9-a11y"`를 한 줄로 다시 실행해 덮어씀
 
+### 7-6. 포트 충돌 (port is already allocated)
+
+- **문제**: 이미 8080을 쓰는 컨테이너가 있는 상태에서 `docker run -p 8080:80 ...` 실행 시 `Bind for 0.0.0.0:8080 failed: port is already allocated` 오류
+- **원인 가설**: 다른 컨테이너(또는 프로세스)가 호스트의 8080 포트를 이미 점유하고 있을 것
+- **확인**: 포트를 점유한 대상을 두 가지 방법으로 진단
+
+```bash
+# 문제 재현
+$ docker run -d -p 8080:80 --name port-test nginx:alpine
+docker: Error response from daemon: failed to set up container networking: ...
+Bind for 0.0.0.0:8080 failed: port is already allocated
+
+# 진단 1: 8080을 공개(publish) 중인 컨테이너 찾기
+$ docker ps --filter "publish=8080"
+CONTAINER ID   IMAGE        ...   STATUS          PORTS                                     NAMES
+c11969c61554   my-web:1.0   ...   Up 10 seconds   0.0.0.0:8080->80/tcp, [::]:8080->80/tcp   my-web-8080
+
+# 진단 2: 리눅스에서 8080 포트가 대기(LISTEN) 중인지 확인
+$ ss -ltn | grep 8080
+LISTEN 0      4096               *:8080            *:*
+```
+
+- **해결**: 상황에 따라 두 가지 방법 중 선택
+
+```bash
+# 방법 A: 충돌을 피해 다른 호스트 포트 사용
+$ docker rm port-test                      # 시작 실패한 컨테이너 정리
+$ docker run -d -p 8083:80 --name port-test nginx:alpine
+
+# 방법 B: 기존 점유 컨테이너를 멈춰 포트 해제 후 재실행
+$ docker rm -f port-test
+$ docker stop my-web-8080
+$ docker ps --filter "publish=8080"        # 결과 없음 → 점유 컨테이너 없음
+$ ss -ltn | grep 8080                      # 결과 없음 → 포트 해제 확인
+$ docker run -d -p 8080:80 --name port-test nginx:alpine
+$ curl -s http://localhost:8080 | head -4
+<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+
+# 원래 상태로 복구
+$ docker rm -f port-test
+$ docker start my-web-8080
+```
+
+- **참고**: Docker가 아닌 일반 프로세스가 포트를 점유한 경우에는 `sudo ss -ltnp | grep 8080`으로 프로세스 이름·PID를 확인하고, 해당 프로그램을 종료하거나 `kill <PID>`로 해제한다. (Windows 쪽 프로그램이 점유한 경우 PowerShell에서 `netstat -ano | findstr :8080`으로 PID 확인)
+
+![포트 충돌 진단](docs/images/ts-04-port-conflict-diagnose.png)
+![포트 해제 후 재실행](docs/images/ts-04-port-release.png)
+
 ---
 
 ## 8. 개념 정리
