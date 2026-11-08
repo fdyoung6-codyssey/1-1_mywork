@@ -651,3 +651,278 @@ $ docker start my-web-8080
 - Git 설정의 이메일은 문서와 스크린샷에서 마스킹했습니다.
 - GitHub 인증은 VSCode의 GitHub 로그인으로 처리해 토큰·비밀번호를 터미널이나 문서에 남기지 않았습니다.
 - `.gitignore`에 `.env`, `*.log`를 등록해 민감정보 파일이 실수로 올라가지 않도록 했습니다.
+
+---
+
+## 10. 보너스 과제
+
+| 과제 | 내용 | 결과 |
+|---|---|---|
+| B1. Docker Compose 기초 | `docker run` 옵션을 `docker-compose.yml`로 문서화, 단일 서비스 실행 | `localhost:8090` 접속 성공 |
+| B2. Compose 운영 명령 | `up`, `ps`, `logs`, `down`으로 상태 확인 루틴 구성 | 종료 후 재실행 정상 |
+| B3. 멀티 컨테이너 | 웹 서버(`web`) + 보조 서비스(`checker`), 서비스 이름으로 통신 | `http://web` 응답 수신 |
+| B4. 환경 변수 | `.env`로 호스트 포트·nginx 포트·실행 모드 분리 | 값만 바꿔 9090/8000/prod로 전환 |
+| B5. GitHub SSH 키 | ed25519 키 생성·등록, 원격 주소를 SSH로 변경 | 로그인 없이 push 성공 |
+
+### 10-1. Docker Compose 기초 (단일 서비스)
+
+**배움 포인트**: 매번 기억해서 입력하던 `docker run -d -p 8080:80 --name ... my-web:1.0` 명령이 파일로 남아, 누구나 `docker compose up` 한 줄로 같은 환경을 재현할 수 있고 설정 변경도 Git으로 기록된다.
+
+```yaml
+# docker-compose.yml (B1 시점)
+services:
+  web:
+    build: .                  # 현재 폴더의 Dockerfile로 이미지 빌드
+    image: my-web:compose
+    container_name: compose-web
+    ports:
+      - "8090:80"
+```
+
+```bash
+$ docker compose version
+Docker Compose version v5.6.1
+
+$ docker compose up -d --build
+ => CACHED [2/2] COPY site/ /usr/share/nginx/html/
+ ✔ Image my-web:compose          Built
+ ✔ Network workstation_default   Created
+ ✔ Container compose-web         Started
+
+$ docker compose ps
+NAME          IMAGE            SERVICE   STATUS         PORTS
+compose-web   my-web:compose   web       Up 18 seconds  0.0.0.0:8090->80/tcp
+
+$ curl http://localhost:8090
+  <h1>Hello Codyssey!</h1>
+```
+
+- `CACHED`: 이전 `my-web:1.0` 빌드와 같은 단계라 다시 실행하지 않고 저장된 결과를 재사용
+- `Network workstation_default Created`: Compose가 서비스 전용 네트워크를 자동 생성
+
+![Compose 실행](docs/images/b1-compose-up.png)
+![브라우저 8090](docs/images/b1-browser-8090.png)
+
+### 10-2. Compose 운영 명령 (상태 확인 루틴)
+
+```bash
+$ docker compose logs --tail 5 web
+compose-web | 172.18.0.1 - - [...] "GET / HTTP/1.1" 200 209 "-" "Mozilla/5.0 ... Chrome/156.0.0.0 ..."
+compose-web | [error] ... open() "/usr/share/nginx/html/favicon.ico" failed (2: No such file or directory)
+compose-web | 172.18.0.1 - - [...] "GET /favicon.ico HTTP/1.1" 404 555 ...
+compose-web | 172.18.0.1 - - [...] "GET / HTTP/1.1" 200 209 "-" "curl/8.18.0"
+compose-web | 172.18.0.1 - - [...] "GET / HTTP/1.1" 200 209 "-" "curl/8.18.0"
+
+$ docker compose down
+ ✔ Container compose-web        Removed
+ ✔ Network workstation_default  Removed
+$ docker compose ps                  # 목록 비어 있음
+
+$ docker compose up -d
+ ✔ Network workstation_default  Created
+ ✔ Container compose-web        Started
+$ curl -s http://localhost:8090 | grep h1
+  <h1>Hello Codyssey!</h1>
+```
+
+| 상황 | 명령 |
+|---|---|
+| 실행 | `docker compose up -d` |
+| 살아 있나? | `docker compose ps` |
+| 무슨 일이 있었나? | `docker compose logs --tail N 서비스명` |
+| 완전히 정리 (컨테이너·네트워크 삭제) | `docker compose down` |
+
+- 로그의 User-Agent로 접속 주체(브라우저 / curl)를 구분할 수 있다.
+- `favicon.ico` 404는 브라우저가 탭 아이콘을 자동 요청한 것으로, 페이지 동작과 무관하다.
+
+![Compose 운영 명령](docs/images/b2-compose-ops.png)
+
+### 10-3. 멀티 컨테이너와 서비스 디스커버리
+
+**배움 포인트**: 같은 Compose 파일의 서비스는 하나의 네트워크에 들어가며, 그 안에서는 IP 대신 **서비스 이름**으로 서로를 찾는다.
+
+```yaml
+  checker:                       # 보조 서비스: 5초마다 web에 접속
+    image: curlimages/curl:8.11.1
+    container_name: compose-checker
+    depends_on:
+      - web
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "[$(date +%T)] $(curl -s http://web | grep -o '<h1>.*</h1>')"
+          sleep 5
+        done
+```
+
+```bash
+$ docker compose ps
+compose-checker   curlimages/curl:8.11.1   checker   Up 2 seconds
+compose-web       my-web:compose           web       Up 3 minutes   0.0.0.0:8090->80/tcp
+
+$ docker compose logs --tail 3 checker
+compose-checker | [02:33:37] <h1>Hello Codyssey!</h1>
+compose-checker | [02:33:42] <h1>Hello Codyssey!</h1>
+compose-checker | [02:33:47] <h1>Hello Codyssey!</h1>
+
+$ docker network inspect workstation_default --format '{{range .Containers}}{{.Name}} {{end}}'
+compose-checker compose-web
+
+$ curl -s --max-time 3 http://web || echo "호스트에서는 web 이름을 찾을 수 없음"
+호스트에서는 web 이름을 찾을 수 없음
+$ curl -s http://localhost:8090 | grep h1
+  <h1>Hello Codyssey!</h1>
+```
+
+| 접속하는 곳 | 주소 | 결과 | 이유 |
+|---|---|---|---|
+| `checker` 컨테이너 안 | `http://web` | 성공 | 같은 Compose 네트워크라 서비스 이름으로 찾음 |
+| 호스트(Ubuntu) | `http://web` | 실패 | 네트워크 바깥이라 `web` 이름을 모름 |
+| 호스트(Ubuntu) | `http://localhost:8090` | 성공 | 포트 매핑으로 연결 |
+
+- `checker`는 외부 접속이 필요 없어 `ports`를 열지 않았다.
+- `up` 시 설정이 바뀌지 않은 `compose-web`은 `Running`(유지), 새 서비스만 `Started`: Compose는 변경된 서비스만 다시 만든다.
+
+![멀티 컨테이너](docs/images/b3-multi-container.png)
+
+### 10-4. 환경 변수로 설정과 코드 분리
+
+**배움 포인트**: 환경마다 달라지는 값(포트, 모드)을 `.env`로 빼 두면, 코드 파일은 그대로 두고 값만 바꿔 다르게 실행할 수 있다.
+
+```bash
+# .env (Git에 올리지 않음) / .env.example (Git에 올리는 예시)
+WEB_PORT=8090      # 호스트 포트
+NGINX_PORT=80      # 컨테이너 안 nginx 포트
+APP_ENV=dev        # 실행 모드
+```
+
+```yaml
+# docker-compose.yml (web 서비스)
+    environment:
+      APP_ENV: ${APP_ENV:-dev}           # 값이 없으면 dev
+      NGINX_PORT: ${NGINX_PORT:-80}
+    volumes:
+      - ./nginx:/etc/nginx/templates:ro  # nginx 템플릿 연결
+    ports:
+      - "${WEB_PORT:-8090}:${NGINX_PORT:-80}"
+```
+
+```nginx
+# nginx/default.conf.template (컨테이너 시작 시 ${변수}가 실제 값으로 치환됨)
+server {
+    listen ${NGINX_PORT};
+    location / { root /usr/share/nginx/html; index index.html; }
+    location /env {
+        default_type text/plain;
+        return 200 "APP_ENV=${APP_ENV} NGINX_PORT=${NGINX_PORT}\n";
+    }
+}
+```
+
+**기본값으로 실행**
+
+```bash
+$ docker compose config | grep -E "APP_ENV|NGINX_PORT|published|target"
+      APP_ENV: dev
+      NGINX_PORT: "80"
+        target: 80
+        published: "8090"
+$ curl http://localhost:8090/env
+APP_ENV=dev NGINX_PORT=80
+```
+
+![환경 변수 기본값](docs/images/b4-env-default.png)
+
+**`.env`가 Git에 올라가지 않는 것 확인**
+
+```bash
+$ git status
+Untracked files:
+        .env.example
+        nginx/
+# .env는 .gitignore에 등록되어 있어 목록에 나타나지 않음
+```
+
+실제 서비스에서 `.env`에는 비밀번호·API 키가 들어가므로 저장소에 올리지 않고, 필요한 변수 목록만 `.env.example`로 공유한다.
+
+![gitignore 확인](docs/images/b4-env-gitignore.png)
+
+**`.env` 값만 바꿔서 재실행**
+
+```bash
+$ sed -i 's/^WEB_PORT=.*/WEB_PORT=9090/; s/^NGINX_PORT=.*/NGINX_PORT=8000/; s/^APP_ENV=.*/APP_ENV=prod/' .env
+$ docker compose up -d
+$ docker compose ps
+compose-web   ...   0.0.0.0:9090->8000/tcp
+$ curl http://localhost:9090/env
+APP_ENV=prod NGINX_PORT=8000
+$ curl -s --max-time 3 http://localhost:8090 || echo "8090은 더 이상 사용하지 않음"
+8090은 더 이상 사용하지 않음
+$ docker compose logs --tail 2 checker
+compose-checker | [02:38:56] <h1>Hello Codyssey!</h1>     # checker도 web:8000으로 자동 접속
+
+# 원래 값으로 복구
+$ cp .env.example .env
+$ docker compose up -d
+$ curl http://localhost:8090/env
+APP_ENV=dev NGINX_PORT=80
+```
+
+![환경 변수 변경](docs/images/b4-env-prod.png)
+
+### 10-5. GitHub SSH 키 설정
+
+**배움 포인트**: SSH는 키 한 쌍으로 인증한다. 개인 키는 내 컴퓨터에만 두고, 공개 키만 GitHub에 등록한다.
+
+| | HTTPS | SSH |
+|---|---|---|
+| 인증 | 계정 로그인 / 토큰 | 키 파일 쌍 |
+| 원격 주소 | `https://github.com/...` | `git@github.com:...` |
+| 특징 | 설정이 간단 | 한 번 등록하면 push 때 로그인·토큰 입력 없음 |
+
+```bash
+$ ssh-keygen -t ed25519 -C "fdyoung9-a11y-wsl"
+$ ls -la ~/.ssh
+drwx------  2 fdyoung68559 fdyoung68559 4096 Nov  8 11:41 .
+-rw-------  1 fdyoung68559 fdyoung68559  411 Nov  8 11:41 id_ed25519       # 개인 키: 600 (나만 접근)
+-rw-r--r--  1 fdyoung68559 fdyoung68559   99 Nov  8 11:41 id_ed25519.pub   # 공개 키: 644
+
+$ ssh -T git@github.com
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added 'github.com' (ED25519) to the list of known hosts.
+Hi fdyoung6-codyssey! You've successfully authenticated, but GitHub does not provide shell access.
+
+$ git remote set-url origin git@github.com:fdyoung6-codyssey/1-1_mywork.git
+$ git remote -v
+origin  git@github.com:fdyoung6-codyssey/1-1_mywork.git (fetch)
+origin  git@github.com:fdyoung6-codyssey/1-1_mywork.git (push)
+
+$ git push
+To github.com:fdyoung6-codyssey/1-1_mywork.git
+   9be65d5..72ddabb  main -> main
+```
+
+- 개인 키는 자동으로 600 권한으로 생성된다. 권한이 너무 열려 있으면 SSH가 키 사용을 거부한다.
+- 공개 키 내용은 문서와 스크린샷에서 가렸다. 개인 키(`id_ed25519`)는 출력하지 않았다.
+
+![SSH push](docs/images/b5-ssh-push.png)
+![GitHub SSH 키 등록](docs/images/b5-github-ssh-key.png)
+
+### 10-6. 트러블슈팅: Ubuntu에서 `docker` 명령을 찾을 수 없음
+
+- **문제**: 컴퓨터를 다시 켠 뒤 `docker compose version` 실행 시 `The command 'docker' could not be found in this WSL 2 distro` 오류
+- **원인 가설**: Docker Desktop이 실행되지 않았거나, Ubuntu와의 WSL 연결이 풀렸을 것
+- **확인**: Docker Desktop 설정에서 `Start Docker Desktop when you sign in to your computer`가 꺼져 있어 자동 실행되지 않았음을 확인
+- **해결**: Docker Desktop 실행 → `Engine running` 확인 → `Settings → WSL integration`에서 Ubuntu 연결을 다시 켜고 Apply → VSCode 터미널 재시작 후 `docker --version` 정상 출력
+
+```bash
+$ docker --version
+Docker version 29.9.2, build a82e528
+$ docker compose version
+Docker Compose version v5.6.1
+```
+
+![docker 명령 없음](docs/images/ts-05-docker-not-found.png)
+![Docker Desktop 설정](docs/images/ts-05-docker-settings.png)
+![복구 후](docs/images/ts-05-docker-fixed.png)
