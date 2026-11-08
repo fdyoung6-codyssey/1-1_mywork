@@ -1,0 +1,15 @@
+server {
+    # 컨테이너 안에서 nginx가 기다리는 포트 (환경 변수로 결정)
+    listen ${NGINX_PORT};
+
+    location / {
+        root  /usr/share/nginx/html;
+        index index.html;
+    }
+
+    # 현재 실행 모드와 포트를 확인하는 주소
+    location /env {
+        default_type text/plain;
+        return 200 "APP_ENV=${APP_ENV} NGINX_PORT=${NGINX_PORT}\n";
+    }
+}

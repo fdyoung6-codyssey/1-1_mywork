@@ -1,20 +1,25 @@
 services:
-  web:                          # 웹 서버 (B1과 동일)
+  web:
     build: .
     image: my-web:compose
     container_name: compose-web
+    environment:                          # 컨테이너 안으로 전달할 환경 변수
+      APP_ENV: ${APP_ENV:-dev}
+      NGINX_PORT: ${NGINX_PORT:-80}
+    volumes:
+      - ./nginx:/etc/nginx/templates:ro   # nginx 템플릿 연결 (읽기 전용)
     ports:
-      - "8090:80"
+      - "${WEB_PORT:-8090}:${NGINX_PORT:-80}"
 
-  checker:                      # 보조 서비스: 5초마다 web에 접속해 확인
+  checker:
     image: curlimages/curl:8.11.1
     container_name: compose-checker
     depends_on:
-      - web                     # web이 먼저 시작된 뒤 실행
+      - web
     entrypoint: ["sh", "-c"]
     command:
       - |
         while true; do
-          echo "[$(date +%T)] $(curl -s http://web | grep -o '<h1>.*</h1>')"
+          echo "[$(date +%T)] $(curl -s http://web:${NGINX_PORT:-80} | grep -o '<h1>.*</h1>')"
           sleep 5
         done
