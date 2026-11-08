@@ -1,0 +1,7 @@
+services:
+  web:                        # 서비스 이름
+    build: .                  # 현재 폴더의 Dockerfile로 이미지 빌드
+    image: my-web:compose     # 만들어질 이미지 이름
+    container_name: compose-web
+    ports:
+      - "8090:80"             # 호스트 8090 → 컨테이너 80
