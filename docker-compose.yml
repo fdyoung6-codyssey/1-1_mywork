@@ -1,7 +1,20 @@
 services:
-  web:                        # 서비스 이름
-    build: .                  # 현재 폴더의 Dockerfile로 이미지 빌드
-    image: my-web:compose     # 만들어질 이미지 이름
+  web:                          # 웹 서버 (B1과 동일)
+    build: .
+    image: my-web:compose
     container_name: compose-web
     ports:
-      - "8090:80"             # 호스트 8090 → 컨테이너 80
+      - "8090:80"
+
+  checker:                      # 보조 서비스: 5초마다 web에 접속해 확인
+    image: curlimages/curl:8.11.1
+    container_name: compose-checker
+    depends_on:
+      - web                     # web이 먼저 시작된 뒤 실행
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "[$(date +%T)] $(curl -s http://web | grep -o '<h1>.*</h1>')"
+          sleep 5
+        done
